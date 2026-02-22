@@ -4,7 +4,14 @@ from typing import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.database.models import Base, Doctor, Patient, MedicalHistory
+from src.database.models import (
+    Base,
+    Appointment,
+    Doctor,
+    DoctorSchedule,
+    MedicalHistory,
+    Patient,
+)
 from src.settings import get_settings
 
 _engine = None
@@ -53,7 +60,33 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
 
+def _seed_doctor_schedules(session, doctors) -> None:
+    """Agrega horarios L-V 9-17 para doctores que no tengan."""
+    from datetime import time
+
+    for doc in doctors:
+        existing = (
+            session.query(DoctorSchedule)
+            .filter(DoctorSchedule.doctor_id == doc.id)
+            .first()
+        )
+        if not existing:
+            for day in range(5):
+                schedule = DoctorSchedule(
+                    doctor_id=doc.id,
+                    day_of_week=day,
+                    start_time=time(9, 0),
+                    end_time=time(17, 0),
+                )
+                session.add(schedule)
+
+
 def seed_demo_data() -> None:
+    # Siempre asegurar que doctores existentes tengan horarios
+    with get_session() as session:
+        doctors = session.query(Doctor).all()
+        _seed_doctor_schedules(session, doctors)
+
     with get_session() as session:
         existing_patient = session.query(Patient).filter_by(phone="999888777").first()
         if existing_patient:
@@ -116,5 +149,7 @@ def seed_demo_data() -> None:
             is_available=True,
         )
         session.add_all([doctor1, doctor2, doctor3])
+        session.flush()
 
+        _seed_doctor_schedules(session, [doctor1, doctor2, doctor3])
         session.commit()

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import interrupt
 
@@ -5,6 +7,7 @@ from src.agents.classifier import MessageClassifier
 from src.agents.responder import DentalResponder
 from src.database.connection import get_session
 from src.graph.state import ConversationState
+from src.services.appointment_service import AppointmentService
 from src.services.doctor_service import DoctorService
 from src.services.patient_service import PatientService
 
@@ -73,7 +76,7 @@ def register_patient(state: ConversationState) -> ConversationState:
             + [
                 AIMessage(
                     content=f"Te he registrado como nuevo paciente. "
-                    f"¡Bienvenido/a a nuestra clínica dental!"
+                    f"¡Bienvenido/a a MuelAI!"
                 )
             ],
         }
@@ -133,8 +136,14 @@ def handle_general_query(state: ConversationState) -> ConversationState:
 
 
 def handle_dental_urgency(state: ConversationState) -> ConversationState:
-    """Maneja urgencias dentales con human-in-the-loop."""
+    """Maneja urgencias dentales: obtiene doctores y pasa a agendar cita."""
     patient_name = state.get("patient_name", "Paciente")
+    messages = state.get("messages", [])
+    last_human_message = ""
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            last_human_message = msg.content
+            break
 
     with get_session() as session:
         available_doctors = DoctorService.get_available_doctors(session)
@@ -147,53 +156,57 @@ def handle_dental_urgency(state: ConversationState) -> ConversationState:
             for doc in available_doctors
         ]
 
-    messages = state.get("messages", [])
-    last_human_message = ""
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            last_human_message = msg.content
-            break
-
-    responder = DentalResponder()
-
     if doctors_list:
+        responder = DentalResponder()
         response = responder.respond_urgency(
             user_message=last_human_message,
             available_doctors=doctors_list,
             patient_name=patient_name,
         )
-
         return {
             **state,
             "available_doctors": doctors_list,
             "awaiting_human": False,
+            "from_check_availability": False,
             "messages": state["messages"] + [AIMessage(content=response)],
         }
     else:
         initial_response = (
             f"Entiendo que tienes una urgencia dental, {patient_name}. "
-            "En este momento no hay doctores disponibles, pero estoy notificando "
-            "a nuestro equipo para que te asistan lo antes posible. "
-            "Por favor, mantente en línea."
+            "En este momento no hay doctores disponibles. "
+            "Por favor, haz clic en 'Verificar disponibilidad' cuando esté listo."
         )
-
         human_input = interrupt(
             {
                 "type": "urgency_no_doctors",
-                "message": f"URGENCIA DENTAL - Paciente: {patient_name}\n"
-                f"Mensaje: {last_human_message}\n\n"
-                "No hay doctores disponibles. Por favor, actualice la disponibilidad "
-                "o asigne un doctor manualmente.",
+                "message": f"URGENCIA DENTAL - Paciente: {patient_name}\nMensaje: {last_human_message}",
                 "patient_phone": state.get("patient_phone"),
                 "required_action": "update_availability",
             }
         )
-
+        if human_input and human_input.get("retry"):
+            with get_session() as session:
+                available_doctors = DoctorService.get_available_doctors(session)
+                doctors_list = [
+                    {
+                        "doctor_id": doc.doctor_id,
+                        "doctor_name": doc.doctor_name,
+                        "specialty": doc.specialty,
+                    }
+                    for doc in available_doctors
+                ]
+            if doctors_list:
+                return {
+                    **state,
+                    "available_doctors": doctors_list,
+                    "awaiting_human": False,
+                    "from_check_availability": False,
+                }
         return {
             **state,
             "available_doctors": [],
             "awaiting_human": True,
-            "human_response": human_input,
+            "from_check_availability": False,
             "messages": state["messages"] + [AIMessage(content=initial_response)],
         }
 
@@ -215,6 +228,105 @@ def check_doctor_availability(state: ConversationState) -> ConversationState:
         **state,
         "available_doctors": doctors_list,
         "awaiting_human": False,
+        "from_check_availability": True,
+    }
+
+
+def select_appointment_slot(state: ConversationState) -> ConversationState:
+    """
+    Human-in-the-loop: muestra slots disponibles y espera que el paciente seleccione.
+    Cuando se resume con human_response (slot seleccionado), crea la cita.
+    """
+    patient_id = state.get("patient_id")
+    patient_name = state.get("patient_name", "Paciente")
+
+    if not patient_id:
+        return {
+            **state,
+            "messages": state["messages"]
+            + [AIMessage(content="Necesito tu número de teléfono para agendar. Indícalo en el panel lateral.")],
+        }
+
+    available_doctors = state.get("available_doctors", [])
+    doctor_ids = [d["doctor_id"] for d in available_doctors] if available_doctors else None
+
+    with get_session() as session:
+        slots = AppointmentService.get_available_slots(session, doctor_ids)
+
+    if not slots:
+        return {
+            **state,
+            "messages": state["messages"]
+            + [
+                AIMessage(
+                    content="Lo siento, no hay horarios disponibles en este momento. "
+                    "Por favor, intenta más tarde o contacta con nosotros."
+                )
+            ],
+            "available_slots": [],
+        }
+
+    selected = interrupt(
+        {
+            "type": "slot_selection",
+            "slots": slots,
+            "message": "Selecciona un horario disponible para tu cita",
+        }
+    )
+
+    slot_id = None
+    if isinstance(selected, dict):
+        slot_id = selected.get("slot_id")
+    elif isinstance(selected, str):
+        slot_id = selected
+
+    if slot_id:
+        try:
+            parts = slot_id.split("|")
+            if len(parts) == 2:
+                doctor_id = int(parts[0])
+                scheduled_at = datetime.fromisoformat(parts[1])
+
+                with get_session() as session:
+                    from src.database.models import Doctor as DoctorModel
+
+                    appointment = AppointmentService.create_appointment(
+                        session, patient_id, doctor_id, scheduled_at
+                    )
+                    appointment_id = appointment.id
+                    doctor_obj = (
+                        session.query(DoctorModel)
+                        .filter(DoctorModel.id == doctor_id)
+                        .first()
+                    )
+                    doctor_name = doctor_obj.name if doctor_obj else "Doctor"
+
+                display_time = scheduled_at.strftime("%d/%m/%Y a las %H:%M")
+                response = (
+                    f"¡Cita agendada exitosamente, {patient_name}! "
+                    f"Tu cita queda programada para el {display_time} "
+                    f"con {doctor_name}. Te esperamos."
+                )
+                return {
+                    **state,
+                    "appointment_confirmed": {
+                        "id": appointment_id,
+                        "scheduled_at": scheduled_at.isoformat(),
+                        "doctor_name": doctor_name,
+                    },
+                    "messages": state["messages"] + [AIMessage(content=response)],
+                }
+        except (ValueError, IndexError):
+            pass
+
+    return {
+        **state,
+        "messages": state["messages"]
+        + [
+            AIMessage(
+                content="Lo siento, hubo un error al agendar. Por favor, selecciona un horario de la lista."
+            )
+        ],
     }
 
 

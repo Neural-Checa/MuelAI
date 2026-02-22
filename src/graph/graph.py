@@ -9,11 +9,11 @@ from src.graph.edges import (
 from src.graph.nodes import (
     check_doctor_availability,
     classify_message,
-    connect_doctor,
     handle_dental_urgency,
     handle_general_query,
     handle_medical_emergency,
     register_patient,
+    select_appointment_slot,
     verify_patient,
 )
 from src.graph.state import ConversationState
@@ -31,7 +31,7 @@ def create_dental_graph():
     graph.add_node("handle_dental_urgency", handle_dental_urgency)
     graph.add_node("handle_medical_emergency", handle_medical_emergency)
     graph.add_node("check_availability", check_doctor_availability)
-    graph.add_node("connect_doctor", connect_doctor)
+    graph.add_node("select_slot", select_appointment_slot)
 
     graph.set_entry_point("verify_patient")
 
@@ -62,8 +62,9 @@ def create_dental_graph():
         "handle_dental_urgency",
         route_after_urgency_check,
         {
-            "connect_doctor": "connect_doctor",
+            "select_slot": "select_slot",
             "wait_human_intervention": "check_availability",
+            "end_conversation": END,
         },
     )
 
@@ -71,12 +72,13 @@ def create_dental_graph():
         "check_availability",
         route_after_urgency_check,
         {
-            "connect_doctor": "connect_doctor",
+            "select_slot": "select_slot",
+            "wait_human_intervention": "check_availability",
             "end_conversation": END,
         },
     )
 
-    graph.add_edge("connect_doctor", END)
+    graph.add_edge("select_slot", END)
 
     graph.add_edge("handle_medical_emergency", END)
 
@@ -97,8 +99,13 @@ def get_initial_state(patient_phone: str | None = None) -> ConversationState:
         "classification": None,
         "medical_history": None,
         "awaiting_human": False,
+        "awaiting_slot_selection": False,
         "available_doctors": [],
+        "available_slots": [],
+        "selected_slot": None,
         "assigned_doctor": None,
+        "appointment_confirmed": None,
         "emergency_contacts_provided": False,
+        "from_check_availability": False,
         "human_response": None,
     }

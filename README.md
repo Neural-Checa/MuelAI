@@ -1,6 +1,6 @@
-# Sistema de Consultas Odontológicas
+# MuelAI
 
-Sistema conversacional con LangGraph para consultas de una clínica dental.
+Sistema conversacional con LangGraph para consultas odontológicas. Asistente dental inteligente que clasifica consultas, agenda citas y gestiona urgencias.
 
 ## Características
 

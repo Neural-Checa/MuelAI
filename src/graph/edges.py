@@ -28,12 +28,15 @@ def route_after_classification(
 
 def route_after_urgency_check(
     state: ConversationState,
-) -> Literal["connect_doctor", "wait_human_intervention"]:
-    """Decide si conectar con doctor disponible o esperar intervención humana."""
+) -> Literal["select_slot", "wait_human_intervention", "end_conversation"]:
+    """Decide si mostrar slots, esperar intervención humana o finalizar."""
     available_doctors = state.get("available_doctors", [])
 
     if available_doctors:
-        return "connect_doctor"
+        return "select_slot"
+    # Si venimos de check_availability y no hay doctores, finalizar
+    if state.get("from_check_availability"):
+        return "end_conversation"
     return "wait_human_intervention"
 
 
