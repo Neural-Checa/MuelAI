@@ -14,6 +14,7 @@ from src.graph.nodes import (
     handle_general_query,
     handle_medical_emergency,
     register_patient,
+    schedule_appointment,
     verify_patient,
 )
 from src.graph.state import ConversationState
@@ -32,6 +33,7 @@ def create_dental_graph():
     graph.add_node("handle_medical_emergency", handle_medical_emergency)
     graph.add_node("check_availability", check_doctor_availability)
     graph.add_node("connect_doctor", connect_doctor)
+    graph.add_node("schedule_appointment", schedule_appointment)
 
     graph.set_entry_point("verify_patient")
 
@@ -76,7 +78,9 @@ def create_dental_graph():
         },
     )
 
-    graph.add_edge("connect_doctor", END)
+    # connect_doctor -> schedule_appointment -> END
+    graph.add_edge("connect_doctor", "schedule_appointment")
+    graph.add_edge("schedule_appointment", END)
 
     graph.add_edge("handle_medical_emergency", END)
 
@@ -86,11 +90,11 @@ def create_dental_graph():
     return compiled_graph
 
 
-def get_initial_state(patient_phone: str | None = None) -> ConversationState:
+def get_initial_state(patient_dni: str | None = None) -> ConversationState:
     """Retorna el estado inicial para una nueva conversación."""
     return {
         "messages": [],
-        "patient_phone": patient_phone,
+        "patient_dni": patient_dni,
         "patient_id": None,
         "patient_exists": False,
         "patient_name": None,
@@ -101,4 +105,5 @@ def get_initial_state(patient_phone: str | None = None) -> ConversationState:
         "assigned_doctor": None,
         "emergency_contacts_provided": False,
         "human_response": None,
+        "appointment_info": None,
     }

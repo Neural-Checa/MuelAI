@@ -50,17 +50,18 @@ class TestConversationState:
         """Verifica que el estado inicial tenga la estructura correcta."""
         from src.graph.graph import get_initial_state
 
-        state = get_initial_state("999888777")
+        state = get_initial_state("76543210")
 
         assert "messages" in state
-        assert "patient_phone" in state
+        assert "patient_dni" in state
         assert "patient_id" in state
         assert "patient_exists" in state
         assert "classification" in state
         assert "awaiting_human" in state
         assert "available_doctors" in state
+        assert "appointment_info" in state
 
-        assert state["patient_phone"] == "999888777"
+        assert state["patient_dni"] == "76543210"
         assert state["patient_exists"] is False
         assert state["messages"] == []
 

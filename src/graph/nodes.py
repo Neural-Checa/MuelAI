@@ -1,3 +1,5 @@
+from datetime import date, datetime, timedelta
+
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import interrupt
 
@@ -5,15 +7,16 @@ from src.agents.classifier import MessageClassifier
 from src.agents.responder import DentalResponder
 from src.database.connection import get_session
 from src.graph.state import ConversationState
+from src.services.appointment_service import AppointmentService
 from src.services.doctor_service import DoctorService
 from src.services.patient_service import PatientService
 
 
 def verify_patient(state: ConversationState) -> ConversationState:
-    """Verifica si el paciente existe en el sistema."""
-    patient_phone = state.get("patient_phone")
+    """Verifica si el paciente existe en el sistema por DNI."""
+    patient_dni = state.get("patient_dni")
 
-    if not patient_phone:
+    if not patient_dni:
         return {
             **state,
             "patient_exists": False,
@@ -22,7 +25,7 @@ def verify_patient(state: ConversationState) -> ConversationState:
         }
 
     with get_session() as session:
-        patient = PatientService.get_patient_by_phone(session, patient_phone)
+        patient = PatientService.get_patient_by_dni(session, patient_dni)
 
         if patient:
             return {
@@ -41,16 +44,16 @@ def verify_patient(state: ConversationState) -> ConversationState:
 
 
 def register_patient(state: ConversationState) -> ConversationState:
-    """Registra un nuevo paciente (simplificado - usa el teléfono como nombre temporal)."""
-    patient_phone = state.get("patient_phone")
+    """Registra un nuevo paciente usando su DNI."""
+    patient_dni = state.get("patient_dni")
 
-    if not patient_phone:
+    if not patient_dni:
         return {
             **state,
             "messages": state["messages"]
             + [
                 AIMessage(
-                    content="Para poder atenderte mejor, necesito tu número de teléfono. "
+                    content="Para poder atenderte mejor, necesito tu DNI. "
                     "Por favor, indícalo en el panel lateral."
                 )
             ],
@@ -59,8 +62,8 @@ def register_patient(state: ConversationState) -> ConversationState:
     with get_session() as session:
         patient = PatientService.create_patient(
             session,
-            name=f"Paciente {patient_phone}",
-            phone=patient_phone,
+            dni=patient_dni,
+            name=f"Paciente {patient_dni}",
         )
         session.commit()
 
@@ -72,7 +75,7 @@ def register_patient(state: ConversationState) -> ConversationState:
             "messages": state["messages"]
             + [
                 AIMessage(
-                    content=f"Te he registrado como nuevo paciente. "
+                    content=f"Te he registrado como nuevo paciente con DNI {patient_dni}. "
                     f"¡Bienvenido/a a nuestra clínica dental!"
                 )
             ],
@@ -184,7 +187,7 @@ def handle_dental_urgency(state: ConversationState) -> ConversationState:
                 f"Mensaje: {last_human_message}\n\n"
                 "No hay doctores disponibles. Por favor, actualice la disponibilidad "
                 "o asigne un doctor manualmente.",
-                "patient_phone": state.get("patient_phone"),
+                "patient_dni": state.get("patient_dni"),
                 "required_action": "update_availability",
             }
         )
@@ -249,6 +252,70 @@ def connect_doctor(state: ConversationState) -> ConversationState:
         "assigned_doctor": selected_doctor,
         "messages": state["messages"] + [AIMessage(content=response)],
     }
+
+
+def schedule_appointment(state: ConversationState) -> ConversationState:
+    """Agenda automáticamente una cita con el doctor asignado, verificando conflictos."""
+    assigned_doctor = state.get("assigned_doctor")
+    patient_id = state.get("patient_id")
+    patient_name = state.get("patient_name", "Paciente")
+
+    if not assigned_doctor or not patient_id:
+        return state
+
+    doctor_id = assigned_doctor["doctor_id"]
+    doctor_name = assigned_doctor["doctor_name"]
+
+    with get_session() as session:
+        today = date.today()
+        slot = AppointmentService.get_next_available_slot(
+            session, doctor_id, today, duration_minutes=30
+        )
+
+        if slot:
+            appt_date, start_time, end_time = slot
+            appointment, error = AppointmentService.create_appointment(
+                session,
+                patient_id=patient_id,
+                doctor_id=doctor_id,
+                appointment_date=appt_date,
+                start_time=start_time,
+                end_time=end_time,
+                reason="Urgencia dental",
+            )
+
+            if appointment:
+                days_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+                day_name = days_es[appt_date.weekday()]
+                appt_info = (
+                    f"📅 **Cita agendada exitosamente**\n\n"
+                    f"- **Doctor:** {doctor_name}\n"
+                    f"- **Fecha:** {day_name} {appt_date.strftime('%d/%m/%Y')}\n"
+                    f"- **Hora:** {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}\n"
+                    f"- **Motivo:** Urgencia dental\n\n"
+                    f"Por favor, llegue 10 minutos antes de su cita."
+                )
+                session.commit()
+                return {
+                    **state,
+                    "appointment_info": appt_info,
+                    "messages": state["messages"] + [AIMessage(content=appt_info)],
+                }
+            else:
+                err_msg = f"No se pudo agendar la cita: {error}"
+                return {
+                    **state,
+                    "messages": state["messages"] + [AIMessage(content=err_msg)],
+                }
+        else:
+            no_slot_msg = (
+                f"{patient_name}, no encontramos horarios disponibles con {doctor_name} "
+                "en las próximas 2 semanas. Nuestro equipo se comunicará contigo para coordinar la cita."
+            )
+            return {
+                **state,
+                "messages": state["messages"] + [AIMessage(content=no_slot_msg)],
+            }
 
 
 def handle_medical_emergency(state: ConversationState) -> ConversationState:

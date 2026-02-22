@@ -1,11 +1,13 @@
 from contextlib import contextmanager
 from typing import Generator
+import os
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.database.models import Base, Doctor, Patient, MedicalHistory
+from src.database.models import Base, Doctor, DoctorSchedule, Patient, MedicalHistory, Appointment
 from src.settings import get_settings
+from datetime import time, date
 
 _engine = None
 _SessionLocal = None
@@ -55,11 +57,13 @@ def init_db() -> None:
 
 def seed_demo_data() -> None:
     with get_session() as session:
-        existing_patient = session.query(Patient).filter_by(phone="999888777").first()
+        existing_patient = session.query(Patient).filter_by(dni="76543210").first()
         if existing_patient:
             return
 
+        # ── Pacientes ──────────────────────────────────────────
         patient1 = Patient(
+            dni="76543210",
             name="María García",
             phone="999888777",
             email="maria.garcia@email.com",
@@ -82,6 +86,7 @@ def seed_demo_data() -> None:
         session.add_all([history1, history2])
 
         patient2 = Patient(
+            dni="65432109",
             name="Carlos López",
             phone="999777666",
             email="carlos.lopez@email.com",
@@ -97,6 +102,7 @@ def seed_demo_data() -> None:
         )
         session.add(history3)
 
+        # ── Doctores ───────────────────────────────────────────
         doctor1 = Doctor(
             name="Dr. Roberto Mendoza",
             specialty="Odontología General",
@@ -116,5 +122,36 @@ def seed_demo_data() -> None:
             is_available=True,
         )
         session.add_all([doctor1, doctor2, doctor3])
+        session.flush()
+
+        # ── Horarios de doctores ───────────────────────────────
+        # Dr. Roberto Mendoza: Lun-Vie 08:00-13:00 y 14:00-18:00
+        for day in range(5):  # 0=Lun … 4=Vie
+            session.add(DoctorSchedule(
+                doctor_id=doctor1.id, day_of_week=day,
+                start_time=time(8, 0), end_time=time(13, 0),
+            ))
+            session.add(DoctorSchedule(
+                doctor_id=doctor1.id, day_of_week=day,
+                start_time=time(14, 0), end_time=time(18, 0),
+            ))
+
+        # Dra. Ana Castillo: Lun, Mié, Vie 09:00-14:00
+        for day in [0, 2, 4]:
+            session.add(DoctorSchedule(
+                doctor_id=doctor2.id, day_of_week=day,
+                start_time=time(9, 0), end_time=time(14, 0),
+            ))
+
+        # Dr. Pedro Vargas: Mar, Jue 10:00-17:00, Sáb 09:00-13:00
+        for day in [1, 3]:
+            session.add(DoctorSchedule(
+                doctor_id=doctor3.id, day_of_week=day,
+                start_time=time(10, 0), end_time=time(17, 0),
+            ))
+        session.add(DoctorSchedule(
+            doctor_id=doctor3.id, day_of_week=5,
+            start_time=time(9, 0), end_time=time(13, 0),
+        ))
 
         session.commit()

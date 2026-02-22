@@ -7,6 +7,10 @@ from src.database.models import MedicalHistory, Patient
 
 class PatientService:
     @staticmethod
+    def get_patient_by_dni(session: Session, dni: str) -> Optional[Patient]:
+        return session.query(Patient).filter(Patient.dni == dni).first()
+
+    @staticmethod
     def get_patient_by_phone(session: Session, phone: str) -> Optional[Patient]:
         return session.query(Patient).filter(Patient.phone == phone).first()
 
@@ -27,9 +31,13 @@ class PatientService:
 
     @staticmethod
     def create_patient(
-        session: Session, name: str, phone: str, email: Optional[str] = None
+        session: Session,
+        dni: str,
+        name: str,
+        phone: Optional[str] = None,
+        email: Optional[str] = None,
     ) -> Patient:
-        patient = Patient(name=name, phone=phone, email=email)
+        patient = Patient(dni=dni, name=name, phone=phone, email=email)
         session.add(patient)
         session.flush()
         return patient
@@ -60,7 +68,7 @@ class PatientService:
         return "".join(summary_parts)
 
     @staticmethod
-    def patient_exists(session: Session, phone: str) -> bool:
+    def patient_exists_by_dni(session: Session, dni: str) -> bool:
         return (
-            session.query(Patient).filter(Patient.phone == phone).first() is not None
+            session.query(Patient).filter(Patient.dni == dni).first() is not None
         )
