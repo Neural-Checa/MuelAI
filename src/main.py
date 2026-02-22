@@ -4,15 +4,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import uuid
+from datetime import date, time, datetime
 
 import streamlit as st
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.database.connection import get_session, init_db, seed_demo_data
+from src.database.connection import (
+    get_session, init_db, seed_demo_data,
+    CLINIC_NAME, CLINIC_PHONE, CLINIC_WEBSITE, CLINIC_ADDRESS,
+)
 from src.graph.graph import create_dental_graph, get_initial_state
 from src.services.appointment_service import AppointmentService
 from src.services.doctor_service import DoctorService
 from src.services.patient_service import PatientService
+from src.services.report_service import generate_report_pdf
 
 
 # ── CSS Moderno ────────────────────────────────────────────────────────────
@@ -142,7 +147,7 @@ section[data-testid="stSidebar"] .stButton > button:hover {
     font-size: 0.95rem;
 }
 
-/* ── Appointment card ──────────────────────────────── */
+/* ── Appointment / Slot cards ──────────────────────── */
 .appt-card {
     background: linear-gradient(135deg, rgba(14,165,233,0.12), rgba(99,102,241,0.12));
     border: 1px solid rgba(14,165,233,0.25);
@@ -152,6 +157,23 @@ section[data-testid="stSidebar"] .stButton > button:hover {
 }
 .appt-card strong { color: #38bdf8; }
 
+.slot-card {
+    background: linear-gradient(135deg, rgba(34,197,94,0.10), rgba(14,165,233,0.10));
+    border: 1px solid rgba(34,197,94,0.25);
+    border-radius: 12px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.5rem;
+}
+
+/* ── Doctor panel ──────────────────────────────────── */
+.doctor-panel {
+    background: linear-gradient(135deg, rgba(168,85,247,0.10), rgba(99,102,241,0.10));
+    border: 1px solid rgba(168,85,247,0.3);
+    border-radius: 14px;
+    padding: 1rem 1.2rem;
+    margin: 1rem 0;
+}
+
 /* ── Chat input ────────────────────────────────────── */
 .stChatInput > div {
     border-radius: 16px !important;
@@ -159,6 +181,15 @@ section[data-testid="stSidebar"] .stButton > button:hover {
 }
 .stChatInput textarea {
     font-family: 'Inter', sans-serif !important;
+}
+
+/* ── Clinic info ───────────────────────────────────── */
+.clinic-info {
+    font-size: 0.8rem;
+    color: #64748b;
+    text-align: center;
+    padding: 0.5rem;
+    margin-top: 0.5rem;
 }
 </style>
 """
@@ -192,11 +223,14 @@ def initialize_session():
     if "messages_display" not in st.session_state:
         st.session_state.messages_display = []
 
+    if "doctor_mode" not in st.session_state:
+        st.session_state.doctor_mode = False
+
 
 def render_sidebar():
     """Renderiza el panel lateral con información y controles."""
-    st.sidebar.markdown("## 🦷 MuelAI PRO")
-    st.sidebar.caption("Sistema de Consultas Odontológicas")
+    st.sidebar.markdown(f"## 🦷 {CLINIC_NAME}")
+    st.sidebar.caption(f"📞 {CLINIC_PHONE} | 🌐 {CLINIC_WEBSITE}")
     st.sidebar.markdown("---")
 
     # ── Identificación por DNI ─────────────────────────
@@ -214,6 +248,7 @@ def render_sidebar():
         st.session_state.thread_id = str(uuid.uuid4())
         st.session_state.conversation_state = None
         st.session_state.messages_display = []
+        st.session_state.doctor_mode = False
         st.rerun()
 
     st.sidebar.markdown("---")
@@ -233,6 +268,28 @@ def render_sidebar():
                 with st.sidebar.expander("📋 Historial Clínico"):
                     st.markdown(history)
 
+                # ── Descargar reporte PDF ──────────────────────
+                with st.sidebar.expander("📄 Reporte Médico PDF"):
+                    if st.button("📥 Generar y Descargar PDF", key="gen_report", use_container_width=True):
+                        with get_session() as report_session:
+                            pdf_bytes = generate_report_pdf(report_session, patient.id)
+                            if pdf_bytes:
+                                st.session_state["report_pdf"] = bytes(pdf_bytes)
+                                st.session_state["report_patient"] = patient.name
+                                st.rerun()
+
+                    if st.session_state.get("report_pdf"):
+                        p_name = st.session_state.get("report_patient", "paciente")
+                        safe_name = p_name.replace(" ", "_").lower()
+                        st.download_button(
+                            label="📕 Descargar PDF",
+                            data=st.session_state["report_pdf"],
+                            file_name=f"historial_{safe_name}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+                        st.success("✅ Reporte listo para descargar")
+
                 # Mostrar citas agendadas
                 appointments = AppointmentService.get_patient_appointments(
                     session, patient.id
@@ -242,11 +299,15 @@ def render_sidebar():
                         days_es = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
                         for appt in appointments:
                             day_name = days_es[appt.appointment_date.weekday()]
+                            # Get doctor name
+                            doc = DoctorService.get_doctor_by_id(session, appt.doctor_id)
+                            doc_name = doc.name if doc else f"Doctor #{appt.doctor_id}"
                             st.markdown(
                                 f"<div class='appt-card'>"
                                 f"<strong>{day_name} {appt.appointment_date.strftime('%d/%m/%Y')}</strong><br/>"
                                 f"🕐 {appt.start_time.strftime('%H:%M')} - {appt.end_time.strftime('%H:%M')}<br/>"
-                                f"👨‍⚕️ Dr. ID {appt.doctor_id}"
+                                f"👨‍⚕️ {doc_name}<br/>"
+                                f"📝 {appt.reason or 'Sin motivo registrado'}"
                                 f"</div>",
                                 unsafe_allow_html=True,
                             )
@@ -284,7 +345,7 @@ def render_sidebar():
 
     st.sidebar.markdown("---")
 
-    # ── Admin panel ────────────────────────────────────
+    # ── Admin / Doctor panel ───────────────────────────
     st.sidebar.markdown("#### ⚙️ Administración")
 
     with st.sidebar.expander("Gestionar Doctores"):
@@ -310,7 +371,6 @@ def render_sidebar():
                         session.commit()
                         st.rerun()
 
-    # Mostrar horarios
     with st.sidebar.expander("📅 Horarios de Doctores"):
         with get_session() as session:
             doctors = DoctorService.get_all_doctors(session)
@@ -328,21 +388,78 @@ def render_sidebar():
                     st.caption("  Sin horario asignado")
                 st.markdown("")
 
+    # ── HITL: Botón para que el doctor entre al chat ───
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("#### 👨‍⚕️ Panel del Doctor (HITL)")
+
+    if st.sidebar.toggle(
+        "Modo Doctor",
+        value=st.session_state.doctor_mode,
+        help="Activar para que el doctor se comunique con el paciente",
+    ):
+        st.session_state.doctor_mode = True
+    else:
+        st.session_state.doctor_mode = False
+
     if st.sidebar.button("🔄 Nueva Conversación", type="secondary", use_container_width=True):
         st.session_state.thread_id = str(uuid.uuid4())
         st.session_state.conversation_state = None
         st.session_state.messages_display = []
         st.session_state.awaiting_human = False
+        st.session_state.doctor_mode = False
         st.rerun()
 
 
-def process_message(user_input: str):
+def _book_slot(slot: dict, patient_id: int, reason: str = "Urgencia dental"):
+    """Agenda una cita a partir de un slot seleccionado."""
+    with get_session() as session:
+        appt_date = date.fromisoformat(slot["date"])
+        start_t = time.fromisoformat(slot["start_time"])
+        end_t = time.fromisoformat(slot["end_time"])
+
+        appointment, error = AppointmentService.create_appointment(
+            session,
+            patient_id=patient_id,
+            doctor_id=slot["doctor_id"],
+            appointment_date=appt_date,
+            start_time=start_t,
+            end_time=end_t,
+            reason=reason,
+        )
+
+        if appointment:
+            session.commit()
+            return True, (
+                f"✅ **¡Cita confirmada!**\n\n"
+                f"- **Doctor:** {slot['doctor_name']} ({slot['specialty']})\n"
+                f"- **Fecha:** {slot['date_display']}\n"
+                f"- **Hora:** {slot['start_time']} - {slot['end_time']}\n"
+                f"- **Clínica:** {CLINIC_NAME}\n"
+                f"- **Dirección:** {CLINIC_ADDRESS}\n\n"
+                f"📞 {CLINIC_PHONE} | 🌐 {CLINIC_WEBSITE}\n\n"
+                f"Por favor, llegue 10 minutos antes de su cita."
+            )
+        else:
+            return False, f"⚠️ {error}"
+
+
+def process_message(user_input: str, is_doctor: bool = False):
     """Procesa un mensaje del usuario a través del grafo."""
     if not st.session_state.patient_dni or len(st.session_state.patient_dni) != 8:
         st.warning("Por favor, ingresa tu DNI de 8 dígitos en el panel lateral.")
         return
 
-    st.session_state.messages_display.append({"role": "user", "content": user_input})
+    role = "assistant" if is_doctor else "user"
+    prefix = "👨‍⚕️ **Doctor:** " if is_doctor else ""
+
+    st.session_state.messages_display.append({
+        "role": role,
+        "content": prefix + user_input,
+    })
+
+    # Si es mensaje del doctor (HITL), no pasar por el grafo
+    if is_doctor:
+        return
 
     if st.session_state.conversation_state is None:
         initial_state = get_initial_state(st.session_state.patient_dni)
@@ -385,18 +502,116 @@ def process_message(user_input: str):
 def render_welcome():
     """Pantalla de bienvenida cuando no hay DNI."""
     st.markdown(
-        """
+        f"""
         <div class="welcome-container">
             <div class="welcome-icon">🦷</div>
-            <div class="welcome-title">MuelAI PRO</div>
+            <div class="welcome-title">{CLINIC_NAME}</div>
             <div class="welcome-subtitle">
                 Bienvenido al asistente virtual de consultas odontológicas.<br/>
                 Para comenzar, ingresa tu <strong>DNI de 8 dígitos</strong> en el panel lateral izquierdo.
+            </div>
+            <div class="clinic-info" style="margin-top:2rem;">
+                📞 {CLINIC_PHONE} | 🌐 {CLINIC_WEBSITE}<br/>
+                📍 {CLINIC_ADDRESS}
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_slot_selection():
+    """Renderiza la selección de slots cuando hay urgencia con horarios disponibles."""
+    state = st.session_state.conversation_state
+    if not state:
+        return
+
+    slots = state.get("available_slots")
+    patient_id = state.get("patient_id")
+
+    if not slots or not patient_id:
+        return
+
+    # Check if already booked
+    if state.get("appointment_info"):
+        return
+
+    st.markdown("---")
+    st.markdown("### 📅 Selecciona un horario disponible")
+
+    # Build the options for the selectbox
+    slot_options = []
+    for i, slot in enumerate(slots):
+        label = f"{slot['doctor_name']} — {slot['date_display']} — {slot['start_time']} a {slot['end_time']}"
+        slot_options.append(label)
+
+    col1, col2 = st.columns([4, 1])
+
+    with col1:
+        selected_idx = st.selectbox(
+            "Horarios disponibles",
+            range(len(slot_options)),
+            format_func=lambda x: slot_options[x],
+            label_visibility="collapsed",
+        )
+
+    with col2:
+        if st.button("✅ Confirmar", type="primary", use_container_width=True):
+            selected_slot = slots[selected_idx]
+            success, message = _book_slot(selected_slot, patient_id)
+
+            st.session_state.messages_display.append({
+                "role": "assistant",
+                "content": message,
+            })
+
+            if success:
+                # Update state to reflect booking
+                st.session_state.conversation_state["appointment_info"] = message
+                st.session_state.conversation_state["available_slots"] = None
+
+            st.rerun()
+
+
+def render_doctor_chat():
+    """Renderiza la entrada de mensajes del doctor (HITL Nivel 2)."""
+    if not st.session_state.doctor_mode:
+        return
+
+    state = st.session_state.conversation_state
+    if not state:
+        return
+
+    classification = state.get("classification")
+    if classification != "urgency":
+        return
+
+    st.markdown(
+        "<div class='doctor-panel'>"
+        "👨‍⚕️ <strong>Modo Doctor activo</strong> — "
+        "Puede revisar el historial del paciente y enviar mensajes directamente."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Show patient history for the doctor
+    patient_id = state.get("patient_id")
+    if patient_id:
+        with st.expander("📋 Ver historial del paciente"):
+            with get_session() as session:
+                history = PatientService.get_medical_history_summary(session, patient_id)
+                st.markdown(history)
+
+    doctor_msg = st.text_input(
+        "Mensaje del doctor",
+        placeholder="Escriba su mensaje al paciente...",
+        key="doctor_input",
+    )
+
+    if st.button("📤 Enviar como Doctor", type="primary"):
+        if doctor_msg:
+            process_message(doctor_msg, is_doctor=True)
+            st.rerun()
 
 
 def render_chat():
@@ -408,9 +623,9 @@ def render_chat():
 
     # ── Header ─────────────────────────────────────────────────
     st.markdown(
-        """
+        f"""
         <div class="app-header">
-            <h1>🦷 Asistente Dental Virtual</h1>
+            <h1>🦷 {CLINIC_NAME}</h1>
             <p>Describe tus síntomas o consulta y te ayudaremos.</p>
         </div>
         """,
@@ -441,6 +656,13 @@ def render_chat():
                 else:
                     st.info("Aún no hay doctores disponibles. Por favor, espera.")
 
+    # ── Slot selection (urgency flow) ──────────────────────────
+    render_slot_selection()
+
+    # ── Doctor HITL panel ──────────────────────────────────────
+    render_doctor_chat()
+
+    # ── Chat input ─────────────────────────────────────────────
     user_input = st.chat_input(
         "Escribe tu consulta aquí...",
         disabled=st.session_state.awaiting_human,
@@ -454,7 +676,7 @@ def render_chat():
 def main():
     """Función principal de la aplicación."""
     st.set_page_config(
-        page_title="MuelAI PRO — Asistente Dental",
+        page_title=f"{CLINIC_NAME} — Asistente Dental",
         page_icon="🦷",
         layout="wide",
         initial_sidebar_state="expanded",

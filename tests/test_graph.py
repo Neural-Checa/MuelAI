@@ -8,7 +8,6 @@ class TestMessageClassification:
     """Tests para la clasificación de mensajes."""
 
     def test_general_query_examples(self):
-        """Ejemplos de consultas que deberían clasificarse como 'general'."""
         general_queries = [
             "¿Cuánto cuesta una limpieza dental?",
             "¿Cada cuánto debo ir al dentista?",
@@ -20,7 +19,6 @@ class TestMessageClassification:
             assert len(query) > 0
 
     def test_urgency_query_examples(self):
-        """Ejemplos de consultas que deberían clasificarse como 'urgency'."""
         urgency_queries = [
             "Tengo un dolor muy fuerte en la muela que no me deja dormir",
             "Se me rompió un diente y me duele mucho",
@@ -32,7 +30,6 @@ class TestMessageClassification:
             assert len(query) > 0
 
     def test_emergency_query_examples(self):
-        """Ejemplos de consultas que deberían clasificarse como 'emergency'."""
         emergency_queries = [
             "No puedo respirar bien, tengo la garganta muy hinchada",
             "Tuve un accidente y no paro de sangrar de la boca",
@@ -47,7 +44,6 @@ class TestConversationState:
     """Tests para el estado de conversación."""
 
     def test_initial_state_structure(self):
-        """Verifica que el estado inicial tenga la estructura correcta."""
         from src.graph.graph import get_initial_state
 
         state = get_initial_state("76543210")
@@ -60,39 +56,34 @@ class TestConversationState:
         assert "awaiting_human" in state
         assert "available_doctors" in state
         assert "appointment_info" in state
+        assert "available_slots" in state
+        assert "doctor_in_chat" in state
 
         assert state["patient_dni"] == "76543210"
         assert state["patient_exists"] is False
         assert state["messages"] == []
+        assert state["available_slots"] is None
+        assert state["doctor_in_chat"] is False
 
 
 class TestEdgeRouting:
     """Tests para las funciones de routing."""
 
     def test_route_after_patient_check_existing(self):
-        """Test routing cuando el paciente existe."""
         from src.graph.edges import route_after_patient_check
 
-        state = {
-            "patient_exists": True,
-            "patient_id": 1,
-        }
+        state = {"patient_exists": True, "patient_id": 1}
         result = route_after_patient_check(state)
         assert result == "classify_message"
 
     def test_route_after_patient_check_new(self):
-        """Test routing cuando el paciente es nuevo."""
         from src.graph.edges import route_after_patient_check
 
-        state = {
-            "patient_exists": False,
-            "patient_id": None,
-        }
+        state = {"patient_exists": False, "patient_id": None}
         result = route_after_patient_check(state)
         assert result == "register_patient"
 
     def test_route_after_classification_general(self):
-        """Test routing para consulta general."""
         from src.graph.edges import route_after_classification
 
         state = {"classification": "general"}
@@ -100,7 +91,6 @@ class TestEdgeRouting:
         assert result == "handle_general_query"
 
     def test_route_after_classification_urgency(self):
-        """Test routing para urgencia dental."""
         from src.graph.edges import route_after_classification
 
         state = {"classification": "urgency"}
@@ -108,9 +98,28 @@ class TestEdgeRouting:
         assert result == "handle_dental_urgency"
 
     def test_route_after_classification_emergency(self):
-        """Test routing para emergencia médica."""
         from src.graph.edges import route_after_classification
 
         state = {"classification": "emergency"}
         result = route_after_classification(state)
         assert result == "handle_medical_emergency"
+
+
+class TestAppointmentConflict:
+    """Tests para verificación de conflictos de citas."""
+
+    def test_no_conflict_empty_db(self):
+        from src.services.appointment_service import AppointmentService
+        from src.database.connection import get_session
+        from datetime import date, time
+
+        with get_session() as session:
+            # Buscar un slot que no tenga conflicto
+            has_conflict = AppointmentService.check_conflict(
+                session,
+                doctor_id=1,
+                appointment_date=date(2029, 12, 31),
+                start_time=time(8, 0),
+                end_time=time(8, 30),
+            )
+            assert has_conflict is False

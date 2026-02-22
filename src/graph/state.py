@@ -35,3 +35,9 @@ class ConversationState(TypedDict):
     human_response: Optional[str]
 
     appointment_info: Optional[str]
+
+    # Slots disponibles para que el paciente seleccione
+    available_slots: Optional[list[dict]]
+
+    # Indica que el doctor se unió al chat (HITL nivel 2)
+    doctor_in_chat: bool

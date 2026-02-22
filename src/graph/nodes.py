@@ -1,15 +1,17 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import interrupt
 
 from src.agents.classifier import MessageClassifier
 from src.agents.responder import DentalResponder
-from src.database.connection import get_session
+from src.database.connection import get_session, CLINIC_NAME, CLINIC_PHONE, CLINIC_WEBSITE
 from src.graph.state import ConversationState
 from src.services.appointment_service import AppointmentService
 from src.services.doctor_service import DoctorService
 from src.services.patient_service import PatientService
+
+DAYS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 
 
 def verify_patient(state: ConversationState) -> ConversationState:
@@ -76,7 +78,7 @@ def register_patient(state: ConversationState) -> ConversationState:
             + [
                 AIMessage(
                     content=f"Te he registrado como nuevo paciente con DNI {patient_dni}. "
-                    f"¡Bienvenido/a a nuestra clínica dental!"
+                    f"¡Bienvenido/a a {CLINIC_NAME}!"
                 )
             ],
         }
@@ -135,8 +137,62 @@ def handle_general_query(state: ConversationState) -> ConversationState:
     }
 
 
+def _build_available_slots(session, doctors_list: list[dict], max_slots: int = 6) -> list[dict]:
+    """Construye la lista de slots disponibles para los doctores dados."""
+    today = date.today()
+    all_slots = []
+
+    for doc_info in doctors_list:
+        doctor_id = doc_info["doctor_id"]
+        doctor_name = doc_info["doctor_name"]
+        specialty = doc_info["specialty"]
+
+        # Buscar slots disponibles en los próximos 7 días
+        for day_offset in range(8):
+            check_date = today + timedelta(days=day_offset)
+            if check_date == today and datetime.now().hour >= 17:
+                continue  # Si ya es tarde hoy, saltar a mañana
+
+            day_of_week = check_date.weekday()
+            schedules = AppointmentService.get_doctor_schedule(session, doctor_id)
+            day_schedules = [s for s in schedules if s.day_of_week == day_of_week]
+
+            for sched in day_schedules:
+                current = sched.start_time
+                while True:
+                    slot_end_dt = datetime.combine(check_date, current) + timedelta(minutes=30)
+                    slot_end = slot_end_dt.time()
+
+                    if slot_end > sched.end_time:
+                        break
+
+                    if not AppointmentService.check_conflict(
+                        session, doctor_id, check_date, current, slot_end
+                    ):
+                        day_name = DAYS_ES[check_date.weekday()]
+                        all_slots.append({
+                            "doctor_id": doctor_id,
+                            "doctor_name": doctor_name,
+                            "specialty": specialty,
+                            "date": check_date.isoformat(),
+                            "date_display": f"{day_name} {check_date.strftime('%d/%m/%Y')}",
+                            "start_time": current.strftime("%H:%M"),
+                            "end_time": slot_end.strftime("%H:%M"),
+                        })
+                        if len(all_slots) >= max_slots:
+                            return all_slots
+
+                    current = slot_end
+
+    return all_slots
+
+
 def handle_dental_urgency(state: ConversationState) -> ConversationState:
-    """Maneja urgencias dentales con human-in-the-loop."""
+    """
+    Maneja urgencias dentales:
+    - Si hay doctores disponibles → muestra horarios disponibles para que el paciente elija
+    - Si NO hay doctores → HITL (human-in-the-loop) para que un operador active doctores
+    """
     patient_name = state.get("patient_name", "Paciente")
 
     with get_session() as session:
@@ -157,27 +213,53 @@ def handle_dental_urgency(state: ConversationState) -> ConversationState:
             last_human_message = msg.content
             break
 
-    responder = DentalResponder()
-
     if doctors_list:
-        response = responder.respond_urgency(
-            user_message=last_human_message,
-            available_doctors=doctors_list,
-            patient_name=patient_name,
-        )
+        # Construir la lista de slots disponibles
+        with get_session() as session:
+            slots = _build_available_slots(session, doctors_list, max_slots=8)
 
-        return {
-            **state,
-            "available_doctors": doctors_list,
-            "awaiting_human": False,
-            "messages": state["messages"] + [AIMessage(content=response)],
-        }
+        if slots:
+            # Formar mensaje con los horarios disponibles
+            slots_text = f"🏥 **{CLINIC_NAME}**\n"
+            slots_text += f"📞 {CLINIC_PHONE} | 🌐 {CLINIC_WEBSITE}\n\n"
+            slots_text += f"Entiendo tu urgencia, {patient_name}. "
+            slots_text += "He encontrado los siguientes horarios disponibles para atenderte:\n\n"
+
+            for i, slot in enumerate(slots, 1):
+                slots_text += (
+                    f"**{i}.** 👨‍⚕️ {slot['doctor_name']} ({slot['specialty']})\n"
+                    f"   📅 {slot['date_display']} — 🕐 {slot['start_time']} a {slot['end_time']}\n\n"
+                )
+
+            slots_text += "**Selecciona un horario en el panel que aparece debajo del chat** para confirmar tu cita."
+
+            return {
+                **state,
+                "available_doctors": doctors_list,
+                "available_slots": slots,
+                "awaiting_human": False,
+                "messages": state["messages"] + [AIMessage(content=slots_text)],
+            }
+        else:
+            no_slots_msg = (
+                f"Entiendo tu urgencia, {patient_name}. "
+                "No encontramos horarios disponibles en los próximos días. "
+                f"Por favor, llama a {CLINIC_PHONE} para coordinar una cita de emergencia."
+            )
+            return {
+                **state,
+                "available_doctors": doctors_list,
+                "available_slots": [],
+                "messages": state["messages"] + [AIMessage(content=no_slots_msg)],
+            }
     else:
+        # No hay doctores disponibles → HITL
         initial_response = (
             f"Entiendo que tienes una urgencia dental, {patient_name}. "
             "En este momento no hay doctores disponibles, pero estoy notificando "
             "a nuestro equipo para que te asistan lo antes posible. "
-            "Por favor, mantente en línea."
+            "Por favor, mantente en línea.\n\n"
+            f"Si es una emergencia inmediata, llama al 📞 **{CLINIC_PHONE}**."
         )
 
         human_input = interrupt(
@@ -195,6 +277,7 @@ def handle_dental_urgency(state: ConversationState) -> ConversationState:
         return {
             **state,
             "available_doctors": [],
+            "available_slots": [],
             "awaiting_human": True,
             "human_response": human_input,
             "messages": state["messages"] + [AIMessage(content=initial_response)],
@@ -222,7 +305,7 @@ def check_doctor_availability(state: ConversationState) -> ConversationState:
 
 
 def connect_doctor(state: ConversationState) -> ConversationState:
-    """Conecta al paciente con un doctor disponible."""
+    """Conecta al paciente con un doctor disponible para HITL chat."""
     available_doctors = state.get("available_doctors", [])
     patient_name = state.get("patient_name", "Paciente")
 
@@ -233,7 +316,7 @@ def connect_doctor(state: ConversationState) -> ConversationState:
             + [
                 AIMessage(
                     content="Lo siento, en este momento no hay doctores disponibles. "
-                    "Por favor, espere mientras nuestro equipo gestiona su caso."
+                    f"Por favor, llame al {CLINIC_PHONE} para asistencia."
                 )
             ],
         }
@@ -242,20 +325,22 @@ def connect_doctor(state: ConversationState) -> ConversationState:
 
     response = (
         f"¡Buenas noticias, {patient_name}! "
-        f"Te he conectado con {selected_doctor['doctor_name']} "
-        f"({selected_doctor['specialty']}). "
-        f"El doctor se unirá a este chat en breve para atender tu urgencia."
+        f"**{selected_doctor['doctor_name']}** ({selected_doctor['specialty']}) "
+        f"se ha unido al chat para atender tu urgencia.\n\n"
+        f"El doctor puede revisar tu historial y comunicarse contigo directamente "
+        f"a través de este chat. Por favor, describe tus síntomas con detalle."
     )
 
     return {
         **state,
         "assigned_doctor": selected_doctor,
+        "doctor_in_chat": True,
         "messages": state["messages"] + [AIMessage(content=response)],
     }
 
 
 def schedule_appointment(state: ConversationState) -> ConversationState:
-    """Agenda automáticamente una cita con el doctor asignado, verificando conflictos."""
+    """Agenda automáticamente una cita con el doctor asignado (post HITL), verificando conflictos."""
     assigned_doctor = state.get("assigned_doctor")
     patient_id = state.get("patient_id")
     patient_name = state.get("patient_name", "Paciente")
@@ -281,18 +366,19 @@ def schedule_appointment(state: ConversationState) -> ConversationState:
                 appointment_date=appt_date,
                 start_time=start_time,
                 end_time=end_time,
-                reason="Urgencia dental",
+                reason="Urgencia dental — derivación por HITL",
             )
 
             if appointment:
-                days_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-                day_name = days_es[appt_date.weekday()]
+                day_name = DAYS_ES[appt_date.weekday()]
                 appt_info = (
                     f"📅 **Cita agendada exitosamente**\n\n"
+                    f"- **Clínica:** {CLINIC_NAME}\n"
                     f"- **Doctor:** {doctor_name}\n"
                     f"- **Fecha:** {day_name} {appt_date.strftime('%d/%m/%Y')}\n"
                     f"- **Hora:** {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}\n"
                     f"- **Motivo:** Urgencia dental\n\n"
+                    f"📞 {CLINIC_PHONE} | 🌐 {CLINIC_WEBSITE}\n"
                     f"Por favor, llegue 10 minutos antes de su cita."
                 )
                 session.commit()
@@ -310,7 +396,7 @@ def schedule_appointment(state: ConversationState) -> ConversationState:
         else:
             no_slot_msg = (
                 f"{patient_name}, no encontramos horarios disponibles con {doctor_name} "
-                "en las próximas 2 semanas. Nuestro equipo se comunicará contigo para coordinar la cita."
+                f"en las próximas 2 semanas. Llame al {CLINIC_PHONE} para coordinar."
             )
             return {
                 **state,
@@ -335,9 +421,12 @@ def handle_medical_emergency(state: ConversationState) -> ConversationState:
         patient_name=patient_name,
     )
 
-    emergency_info = """
+    emergency_info = f"""
 
 ---
+**🏥 {CLINIC_NAME}**
+📞 {CLINIC_PHONE} | 🌐 {CLINIC_WEBSITE}
+
 **CONTACTOS DE EMERGENCIA:**
 - **Emergencias (SAMU):** 106
 - **Bomberos:** 116

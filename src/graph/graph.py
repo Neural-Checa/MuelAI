@@ -60,6 +60,8 @@ def create_dental_graph():
 
     graph.add_edge("handle_general_query", END)
 
+    # Urgencia: si hay doctores → END (el usuario agenda desde la UI)
+    # Si no hay doctores → HITL → check_availability → connect_doctor → schedule → END
     graph.add_conditional_edges(
         "handle_dental_urgency",
         route_after_urgency_check,
@@ -78,7 +80,9 @@ def create_dental_graph():
         },
     )
 
-    # connect_doctor -> schedule_appointment -> END
+    # Cuando hay doctores disponibles directo, el urgency node retorna
+    # con available_slots y END — la UI maneja la selección.
+    # Pero si se fuerza connect_doctor (HITL), se auto-agenda.
     graph.add_edge("connect_doctor", "schedule_appointment")
     graph.add_edge("schedule_appointment", END)
 
@@ -106,4 +110,6 @@ def get_initial_state(patient_dni: str | None = None) -> ConversationState:
         "emergency_contacts_provided": False,
         "human_response": None,
         "appointment_info": None,
+        "available_slots": None,
+        "doctor_in_chat": False,
     }
