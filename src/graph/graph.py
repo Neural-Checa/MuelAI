@@ -4,6 +4,8 @@ from langgraph.graph import END, StateGraph
 from src.graph.edges import (
     route_after_classification,
     route_after_patient_check,
+    route_after_patient_flow,
+    route_after_urgency,
     route_after_urgency_check,
 )
 from src.graph.nodes import (
@@ -19,7 +21,7 @@ from src.graph.nodes import (
 from src.graph.state import ConversationState
 
 
-def create_dental_graph():
+def build_graph():
     """Crea y retorna el grafo de LangGraph para el asistente dental."""
 
     graph = StateGraph(ConversationState)
@@ -40,11 +42,30 @@ def create_dental_graph():
         route_after_patient_check,
         {
             "register_patient": "register_patient",
+            "check_availability": "check_availability",
+            "classify_message": "post_patient_flow",
+        },
+    )
+
+    graph.add_node("post_patient_flow", lambda state: state)
+
+    graph.add_conditional_edges(
+        "post_patient_flow",
+        route_after_patient_flow,
+        {
+            "check_availability": "check_availability",
             "classify_message": "classify_message",
         },
     )
 
-    graph.add_edge("register_patient", "classify_message")
+    graph.add_conditional_edges(
+        "register_patient",
+        route_after_patient_flow,
+        {
+            "check_availability": "check_availability",
+            "classify_message": "classify_message",
+        },
+    )
 
     graph.add_conditional_edges(
         "classify_message",
@@ -60,10 +81,10 @@ def create_dental_graph():
 
     graph.add_conditional_edges(
         "handle_dental_urgency",
-        route_after_urgency_check,
+        route_after_urgency,
         {
             "connect_doctor": "connect_doctor",
-            "wait_human_intervention": "check_availability",
+            "still_waiting": END,
         },
     )
 
@@ -72,7 +93,7 @@ def create_dental_graph():
         route_after_urgency_check,
         {
             "connect_doctor": "connect_doctor",
-            "end_conversation": END,
+            "still_waiting": END,
         },
     )
 
@@ -84,6 +105,11 @@ def create_dental_graph():
     compiled_graph = graph.compile(checkpointer=memory)
 
     return compiled_graph
+
+
+def create_dental_graph():
+    """Mantiene compatibilidad con el nombre anterior."""
+    return build_graph()
 
 
 def get_initial_state(patient_phone: str | None = None) -> ConversationState:
@@ -100,5 +126,4 @@ def get_initial_state(patient_phone: str | None = None) -> ConversationState:
         "available_doctors": [],
         "assigned_doctor": None,
         "emergency_contacts_provided": False,
-        "human_response": None,
     }

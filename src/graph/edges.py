@@ -5,11 +5,15 @@ from src.graph.state import ConversationState
 
 def route_after_patient_check(
     state: ConversationState,
-) -> Literal["register_patient", "classify_message"]:
+) -> Literal["register_patient", "classify_message", "check_availability"]:
     """Decide si registrar paciente nuevo o clasificar mensaje."""
-    if state["patient_exists"]:
-        return "classify_message"
-    return "register_patient"
+    if not state["patient_exists"]:
+        return "register_patient"
+
+    if state.get("awaiting_human"):
+        return "check_availability"
+
+    return "classify_message"
 
 
 def route_after_classification(
@@ -26,23 +30,32 @@ def route_after_classification(
         return "handle_medical_emergency"
 
 
-def route_after_urgency_check(
+def route_after_patient_flow(
     state: ConversationState,
-) -> Literal["connect_doctor", "wait_human_intervention"]:
-    """Decide si conectar con doctor disponible o esperar intervención humana."""
+) -> Literal["check_availability", "classify_message"]:
+    """En contexto stateless, prioriza re-chequear disponibilidad si estaba en espera."""
+    if state.get("awaiting_human"):
+        return "check_availability"
+    return "classify_message"
+
+
+def route_after_urgency(
+    state: ConversationState,
+) -> Literal["connect_doctor", "still_waiting"]:
+    """Ruta posterior al manejo de urgencia inicial."""
     available_doctors = state.get("available_doctors", [])
 
     if available_doctors:
         return "connect_doctor"
-    return "wait_human_intervention"
+    return "still_waiting"
 
 
-def should_continue_urgency_loop(
+def route_after_urgency_check(
     state: ConversationState,
-) -> Literal["check_availability", "end_conversation"]:
-    """Determina si continuar el loop de urgencia o finalizar."""
-    if state.get("assigned_doctor"):
-        return "end_conversation"
-    if state.get("human_response"):
-        return "check_availability"
-    return "end_conversation"
+) -> Literal["connect_doctor", "still_waiting"]:
+    """Ruta después del re-chequeo de disponibilidad."""
+    available_doctors = state.get("available_doctors", [])
+
+    if available_doctors:
+        return "connect_doctor"
+    return "still_waiting"

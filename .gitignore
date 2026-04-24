@@ -1,1 +1,36 @@
+# Environment files
 .env
+.env.local
+.env.*.local
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Local data and databases
+*.db
+*.sqlite3
+
+# Logs and misc generated files
+*.log
+*.seed
+*.pid
+*.pid.lock
+
+# Previous system design .md file
+SYSTEM_DESIGN.md

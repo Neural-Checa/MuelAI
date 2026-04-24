@@ -3,6 +3,7 @@ from src.schemas.models import (
     DoctorAvailability,
     PatientCreate,
     PatientResponse,
+    TwilioInboundPayload,
 )
 
 __all__ = [
@@ -10,4 +11,5 @@ __all__ = [
     "PatientResponse",
     "DoctorAvailability",
     "ClassificationResult",
+    "TwilioInboundPayload",
 ]

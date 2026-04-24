@@ -31,5 +31,3 @@ class ConversationState(TypedDict):
     assigned_doctor: Optional[dict]
 
     emergency_contacts_provided: bool
-
-    human_response: Optional[str]

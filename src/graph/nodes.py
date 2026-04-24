@@ -1,5 +1,4 @@
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.types import interrupt
 
 from src.agents.classifier import MessageClassifier
 from src.agents.responder import DentalResponder
@@ -167,39 +166,30 @@ def handle_dental_urgency(state: ConversationState) -> ConversationState:
             **state,
             "available_doctors": doctors_list,
             "awaiting_human": False,
+            "assigned_doctor": None,
             "messages": state["messages"] + [AIMessage(content=response)],
         }
     else:
-        initial_response = (
+        waiting_response = (
             f"Entiendo que tienes una urgencia dental, {patient_name}. "
             "En este momento no hay doctores disponibles, pero estoy notificando "
             "a nuestro equipo para que te asistan lo antes posible. "
             "Por favor, mantente en línea."
         )
 
-        human_input = interrupt(
-            {
-                "type": "urgency_no_doctors",
-                "message": f"URGENCIA DENTAL - Paciente: {patient_name}\n"
-                f"Mensaje: {last_human_message}\n\n"
-                "No hay doctores disponibles. Por favor, actualice la disponibilidad "
-                "o asigne un doctor manualmente.",
-                "patient_phone": state.get("patient_phone"),
-                "required_action": "update_availability",
-            }
-        )
-
         return {
             **state,
             "available_doctors": [],
             "awaiting_human": True,
-            "human_response": human_input,
-            "messages": state["messages"] + [AIMessage(content=initial_response)],
+            "assigned_doctor": None,
+            "messages": state["messages"] + [AIMessage(content=waiting_response)],
         }
 
 
 def check_doctor_availability(state: ConversationState) -> ConversationState:
-    """Verifica la disponibilidad de doctores después de intervención humana."""
+    """Reconsulta disponibilidad para continuar o mantener la espera."""
+    patient_name = state.get("patient_name", "Paciente")
+
     with get_session() as session:
         available_doctors = DoctorService.get_available_doctors(session)
         doctors_list = [
@@ -211,10 +201,26 @@ def check_doctor_availability(state: ConversationState) -> ConversationState:
             for doc in available_doctors
         ]
 
+    if doctors_list:
+        return {
+            **state,
+            "available_doctors": doctors_list,
+            "assigned_doctor": doctors_list[0],
+            "awaiting_human": False,
+        }
+
+    still_waiting_response = (
+        f"Seguimos buscando un doctor disponible para ti, {patient_name}. "
+        "Aun no hay disponibilidad en este momento. "
+        "Te avisaremos apenas podamos asignarte uno."
+    )
+
     return {
         **state,
-        "available_doctors": doctors_list,
-        "awaiting_human": False,
+        "available_doctors": [],
+        "assigned_doctor": None,
+        "awaiting_human": True,
+        "messages": state["messages"] + [AIMessage(content=still_waiting_response)],
     }
 
 

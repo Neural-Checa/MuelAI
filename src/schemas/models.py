@@ -68,3 +68,11 @@ class HumanInterventionRequest(BaseModel):
     required_action: Literal["update_availability", "assign_doctor", "custom_response"]
     patient_phone: Optional[str] = None
     urgency_level: Optional[str] = None
+
+
+class TwilioInboundPayload(BaseModel):
+    From: str
+    Body: str
+    To: Optional[str] = None
+    MessageSid: Optional[str] = None
+    AccountSid: Optional[str] = None

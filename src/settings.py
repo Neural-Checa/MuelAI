@@ -17,6 +17,11 @@ class Settings(BaseSettings):
         default="gemini-2.5-flash",
         description="Gemini model to use",
     )
+    twilio_account_sid: str = Field(description="Twilio Account SID")
+    twilio_auth_token: str = Field(description="Twilio Auth Token")
+    twilio_phone_number: str = Field(
+        description='Twilio WhatsApp sender, e.g. "whatsapp:+14155238886"'
+    )
 
 
 def get_settings() -> Settings:
