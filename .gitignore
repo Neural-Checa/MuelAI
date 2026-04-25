@@ -34,3 +34,6 @@ ENV/
 
 # Previous system design .md file
 SYSTEM_DESIGN.md
+
+# Database files
+dental_clinic.db
